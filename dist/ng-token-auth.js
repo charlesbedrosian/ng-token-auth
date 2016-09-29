@@ -640,6 +640,7 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               }
             },
             deleteData: function(key) {
+              var cookieOps;
               if (this.getConfig().storage instanceof Object) {
                 this.getConfig().storage.deleteData(key);
               }
@@ -649,9 +650,13 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
                 case 'sessionStorage':
                   return $window.sessionStorage.removeItem(key);
                 default:
-                  return ipCookie.remove(key, {
+                  cookieOps = {
                     path: this.getConfig().cookieOps.path
-                  });
+                  };
+                  if (this.getConfig().cookieOps.domain !== void 0) {
+                    cookieOps.domain = this.getConfig().cookieOps.domain;
+                  }
+                  return ipCookie.remove(key, cookieOps);
               }
             },
             setAuthHeaders: function(h) {

@@ -158,8 +158,8 @@ angular.module('ng-token-auth', ['ipCookie'])
               # check if a new user was registered
               oauthRegistration = ev.data.oauth_registration
               delete ev.data.oauth_registration
-              @handleValidAuth(ev.data, true)
-              $rootScope.$broadcast('auth:login-success', ev.data)
+              @handleValidAuth(ev.data, true).then() ->
+                $rootScope.$broadcast('auth:login-success', ev.data)
               if oauthRegistration
                 $rootScope.$broadcast('auth:oauth-registration', ev.data)
             if ev.data.message == 'authFailure'
@@ -218,8 +218,8 @@ angular.module('ng-token-auth', ['ipCookie'])
               .success((resp) =>
                 @setConfigName(opts.config)
                 authData = @getConfig(opts.config).handleLoginResponse(resp, @)
-                @handleValidAuth(authData)
-                $rootScope.$broadcast('auth:login-success', @user)
+                @handleValidAuth(authData).then () ->
+                  $rootScope.$broadcast('auth:login-success', @user)
               )
               .error((resp) =>
                 @rejectDfd({
@@ -419,7 +419,6 @@ angular.module('ng-token-auth', ['ipCookie'])
           # this needs to happen after a reflow so that the promise
           # can be rejected properly before it is destroyed.
           resolveDfd: ->
-            return unless @dfd
             @dfd.resolve(@user)
             $timeout((=>
               @dfd = null
@@ -566,19 +565,19 @@ angular.module('ng-token-auth', ['ipCookie'])
               $http.get(@apiUrl(opts.config) + @getConfig(opts.config).tokenValidationPath)
                 .success((resp) =>
                   authData = @getConfig(opts.config).handleTokenValidationResponse(resp)
-                  @handleValidAuth(authData)
+                  @handleValidAuth(authData).then () ->
 
-                  # broadcast event for first time login
-                  if @firstTimeLogin
-                    $rootScope.$broadcast('auth:email-confirmation-success', @user)
+                    # broadcast event for first time login
+                    if @firstTimeLogin
+                      $rootScope.$broadcast('auth:email-confirmation-success', @user)
 
-                  if @oauthRegistration
-                    $rootScope.$broadcast('auth:oauth-registration', @user)
+                    if @oauthRegistration
+                      $rootScope.$broadcast('auth:oauth-registration', @user)
 
-                  if @mustResetPassword
-                    $rootScope.$broadcast('auth:password-reset-confirm-success', @user)
+                    if @mustResetPassword
+                      $rootScope.$broadcast('auth:password-reset-confirm-success', @user)
 
-                  $rootScope.$broadcast('auth:validation-success', @user)
+                    $rootScope.$broadcast('auth:validation-success', @user)
                 )
                 .error((data) =>
                   # broadcast event for first time login failure
@@ -621,36 +620,41 @@ angular.module('ng-token-auth', ['ipCookie'])
           # 2. token validation failure
           # 3. user logs out
           invalidateTokens: ->
+            deferred = $q.defer()
+
             # cannot delete user object for scoping reasons. instead, delete
             # all keys on object.
             delete @user[key] for key, val of @user
 
             # remove any assumptions about current configuration
-            @deleteData('currentConfigName')
+            @deleteData('currentConfigName').then () ->
 
-            $interval.cancel @timer if @timer?
+              $interval.cancel @timer if @timer?
 
-            # kill cookies, otherwise session will resume on page reload
-            # setting this value to null will force the validateToken method
-            # to re-validate credentials with api server when validate is called
-            @deleteData('auth_headers')
+              # kill cookies, otherwise session will resume on page reload
+              # setting this value to null will force the validateToken method
+              # to re-validate credentials with api server when validate is called
+              @deleteData('auth_headers').then() ->
+                deferred.resolve()
 
+            return deferred
 
           # destroy auth token on server, destroy user auth credentials
           signOut: ->
             $http.delete(@apiUrl() + @getConfig().signOutUrl)
               .success((resp) =>
-                @invalidateTokens()
-                $rootScope.$broadcast('auth:logout-success')
+                @invalidateTokens().then () ->
+                  $rootScope.$broadcast('auth:logout-success')
               )
               .error((resp) =>
-                @invalidateTokens()
-                $rootScope.$broadcast('auth:logout-error', resp)
+                @invalidateTokens().then () ->
+                  $rootScope.$broadcast('auth:logout-error', resp)
               )
 
 
           # handle successful authentication
           handleValidAuth: (user, setHeader=false) ->
+            deferred = $.defer()
             # cancel any pending postMessage checks
             $timeout.cancel(@requestCredentialsPollingTimer) if @requestCredentialsPollingTimer?
 
@@ -671,11 +675,16 @@ angular.module('ng-token-auth', ['ipCookie'])
                 clientId: @user.client_id
                 uid:      @user.uid
                 expiry:   @user.expiry
-              }))
+              })).then () ->
+                deferred.resolve()
+                # fulfill promise
+                @resolveDfd()
+            else
+              deferred.resolve()
+              # fulfill promise
+              @resolveDfd()
 
-            # fulfill promise
-            @resolveDfd()
-
+            return deferred
 
           # configure auth token format.
           buildAuthHeaders: (ctx) ->
@@ -689,8 +698,11 @@ angular.module('ng-token-auth', ['ipCookie'])
 
           # abstract persistent data store
           persistData: (key, val, configName) ->
+            deferred = $q.defer()
+
             if @getConfig(configName).storage instanceof Object
-              @getConfig(configName).storage.persistData(key, val, @getConfig(configName))
+              @getConfig(configName).storage.persistData(key, val, @getConfig(configName)).then () ->
+                deferred.fulfill()
             else
               switch @getConfig(configName).storage
                 when 'localStorage'
@@ -699,60 +711,70 @@ angular.module('ng-token-auth', ['ipCookie'])
                   $window.sessionStorage.setItem(key, JSON.stringify(val))
                 else
                   ipCookie(key, val, @getConfig().cookieOps)
+              deferred.fulfill()
+
+            return deferred
 
           # abstract persistent data retrieval
           retrieveData: (key) ->
+            deferred = $q.defer()
             try
               if @getConfig().storage instanceof Object
-                @getConfig().storage.retrieveData(key)
+                @getConfig().storage.retrieveData(key).then (data) ->
+                  deferred.fulfill(data)
               else
                 switch @getConfig().storage
                   when 'localStorage'
-                    JSON.parse($window.localStorage.getItem(key))
+                    deferred.fulfill(JSON.parse($window.localStorage.getItem(key)))
                   when 'sessionStorage'
-                    JSON.parse($window.sessionStorage.getItem(key))
-                  else ipCookie(key)
+                    deferred.fulfill(JSON.parse($window.sessionStorage.getItem(key)))
+                  else deferred.fulfill(ipCookie(key))
             catch e
               # gracefully handle if JSON parsing
               if e instanceof SyntaxError
                 undefined
               else
                 throw e
+            return deferred
 
           # abstract persistent data removal
           deleteData: (key) ->
+            deferred = $q.defer()
             if @getConfig().storage instanceof Object
-              @getConfig().storage.deleteData(key);
+              @getConfig().storage.deleteData(key).then () ->
+                deferred.fulfill()
             switch @getConfig().storage
               when 'localStorage'
                 $window.localStorage.removeItem(key)
               when 'sessionStorage'
                 $window.sessionStorage.removeItem(key)
               else
-                cookieOps = {path: @getConfig().cookieOps.path}
-                
-                if @getConfig().cookieOps.domain != undefined
-                  cookieOps.domain = @getConfig().cookieOps.domain
+                ipCookie.remove(key, {path: @getConfig().cookieOps.path})
+            deferred.fulfill()
+            return deferred
 
-                ipCookie.remove(key, cookieOps)
 
           # persist authentication token, client id, uid
           setAuthHeaders: (h) ->
-            newHeaders = angular.extend((@retrieveData('auth_headers') || {}), h)
-            result = @persistData('auth_headers', newHeaders)
+            deferred = $q.defer()
+            @retrieveData('auth_headers').then (existingHeaders) ->
 
-            expiry = @getExpiry()
-            now    = new Date().getTime()
+              newHeaders = angular.extend((existingHeaders || {}), h)
+              @persistData('auth_headers', newHeaders).then (result) ->
 
-            if expiry > now
-              $interval.cancel @timer if @timer?
+                expiry = @getExpiry()
+                now    = new Date().getTime()
 
-              @timer = $interval (=>
-                @validateUser {config: @getSavedConfig()}
-              ), (parseInt (expiry - now)), 1
+                if expiry > now
+                  $interval.cancel @timer if @timer?
 
-            result
+                  @timer = $interval (=>
+                    @validateUser {config: @getSavedConfig()}
+                  ), (parseInt (expiry - now)), 1
 
+                deferred.fulfill(result)
+
+            return deferred
 
 
           initDfd: ->
