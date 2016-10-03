@@ -140,8 +140,9 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
                 delete ev.data.message;
                 oauthRegistration = ev.data.oauth_registration;
                 delete ev.data.oauth_registration;
-                this.handleValidAuth(ev.data, true);
-                $rootScope.$broadcast('auth:login-success', ev.data);
+                this.handleValidAuth(ev.data, true).then(function() {
+                  return $rootScope.$broadcast('auth:login-success', ev.data);
+                });
                 if (oauthRegistration) {
                   $rootScope.$broadcast('auth:oauth-registration', ev.data);
                 }
@@ -197,11 +198,13 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               this.initDfd();
               $http.post(this.apiUrl(opts.config) + this.getConfig(opts.config).emailSignInPath, params, httpopts).success((function(_this) {
                 return function(resp) {
-                  var authData;
+                  var authData, self;
                   _this.setConfigName(opts.config);
                   authData = _this.getConfig(opts.config).handleLoginResponse(resp, _this);
-                  _this.handleValidAuth(authData);
-                  return $rootScope.$broadcast('auth:login-success', _this.user);
+                  self = _this;
+                  return _this.handleValidAuth(authData).then(function() {
+                    return $rootScope.$broadcast('auth:login-success', self.user);
+                  });
                 };
               })(this)).error((function(_this) {
                 return function(resp) {
@@ -215,7 +218,15 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               return this.dfd.promise;
             },
             userIsAuthenticated: function() {
-              return this.retrieveData('auth_headers') && this.user.signedIn && !this.tokenHasExpired();
+              var deferred, self;
+              deferred = $q.defer();
+              self = this;
+              this.retrieveData('auth_headers').then(function(headers) {
+                var isAuthenticated;
+                isAuthenticated = headers && self.user.signedIn && !self.tokenHasExpired();
+                return deferred.resolve(isAuthenticated);
+              });
+              return deferred.promise;
             },
             requestPasswordReset: function(params, opts) {
               var successUrl;
@@ -381,9 +392,6 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               return $rootScope.$broadcast('auth:window-closed');
             },
             resolveDfd: function() {
-              if (!this.dfd) {
-                return;
-              }
               this.dfd.resolve(this.user);
               return $timeout(((function(_this) {
                 return function() {
@@ -425,70 +433,82 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               return obj;
             },
             validateUser: function(opts) {
-              var clientId, configName, expiry, location_parse, params, search, token, uid, url;
+              var configName, self;
               if (opts == null) {
                 opts = {};
               }
               configName = opts.config;
               if (this.dfd == null) {
                 this.initDfd();
-                if (this.userIsAuthenticated()) {
-                  this.resolveDfd();
-                } else {
-                  search = $location.search();
-                  location_parse = this.parseLocation(window.location.search);
-                  params = Object.keys(search).length === 0 ? location_parse : search;
-                  token = params.auth_token || params.token;
-                  if (token !== void 0) {
-                    clientId = params.client_id;
-                    uid = params.uid;
-                    expiry = params.expiry;
-                    configName = params.config;
-                    this.setConfigName(configName);
-                    this.mustResetPassword = params.reset_password;
-                    this.firstTimeLogin = params.account_confirmation_success;
-                    this.oauthRegistration = params.oauth_registration;
-                    this.setAuthHeaders(this.buildAuthHeaders({
-                      token: token,
-                      clientId: clientId,
-                      uid: uid,
-                      expiry: expiry
-                    }));
-                    url = $location.path() || '/';
-                    ['auth_token', 'token', 'client_id', 'uid', 'expiry', 'config', 'reset_password', 'account_confirmation_success', 'oauth_registration'].forEach(function(prop) {
-                      return delete params[prop];
-                    });
-                    if (Object.keys(params).length > 0) {
-                      url += '?' + this.buildQueryString(params);
-                    }
-                    $location.url(url);
-                  } else if (this.retrieveData('currentConfigName')) {
-                    configName = this.retrieveData('currentConfigName');
-                  }
-                  if (this.getConfig().forceValidateToken) {
-                    this.validateToken({
-                      config: configName
-                    });
-                  } else if (!isEmpty(this.retrieveData('auth_headers'))) {
-                    if (this.tokenHasExpired()) {
-                      $rootScope.$broadcast('auth:session-expired');
-                      this.rejectDfd({
-                        reason: 'unauthorized',
-                        errors: ['Session expired.']
+                self = this;
+                this.userIsAuthenticated().then(function(authenticated) {
+                  var clientId, expiry, location_parse, params, search, token, uid, url;
+                  if (authenticated) {
+                    return this.resolveDfd();
+                  } else {
+                    search = $location.search();
+                    location_parse = self.parseLocation(window.location.search);
+                    params = Object.keys(search).length === 0 ? location_parse : search;
+                    token = params.auth_token || params.token;
+                    if (token !== void 0) {
+                      clientId = params.client_id;
+                      uid = params.uid;
+                      expiry = params.expiry;
+                      configName = params.config;
+                      self.setConfigName(configName);
+                      self.mustResetPassword = params.reset_password;
+                      self.firstTimeLogin = params.account_confirmation_success;
+                      self.oauthRegistration = params.oauth_registration;
+                      self.setAuthHeaders(self.buildAuthHeaders({
+                        token: token,
+                        clientId: clientId,
+                        uid: uid,
+                        expiry: expiry
+                      }));
+                      url = $location.path() || '/';
+                      ['auth_token', 'token', 'client_id', 'uid', 'expiry', 'config', 'reset_password', 'account_confirmation_success', 'oauth_registration'].forEach(function(prop) {
+                        return delete params[prop];
                       });
+                      if (Object.keys(params).length > 0) {
+                        url += '?' + self.buildQueryString(params);
+                      }
+                      $location.url(url);
                     } else {
-                      this.validateToken({
+                      self.retrieveData('currentConfigName').then(function(currentConfigName) {
+                        if (currentConfigName) {
+                          return configName = currentConfigName;
+                        }
+                      });
+                    }
+                    if (self.getConfig().forceValidateToken) {
+                      return self.validateToken({
                         config: configName
                       });
+                    } else {
+                      return self.retrieveData('auth_headers').then(function(authHeaders) {
+                        if (!isEmpty(authHeaders)) {
+                          if (self.tokenHasExpired()) {
+                            $rootScope.$broadcast('auth:session-expired');
+                            return self.rejectDfd({
+                              reason: 'unauthorized',
+                              errors: ['Session expired.']
+                            });
+                          } else {
+                            return self.validateToken({
+                              config: configName
+                            });
+                          }
+                        } else {
+                          self.rejectDfd({
+                            reason: 'unauthorized',
+                            errors: ['No credentials']
+                          });
+                          return $rootScope.$broadcast('auth:invalid');
+                        }
+                      });
                     }
-                  } else {
-                    this.rejectDfd({
-                      reason: 'unauthorized',
-                      errors: ['No credentials']
-                    });
-                    $rootScope.$broadcast('auth:invalid');
                   }
-                }
+                });
               }
               return this.dfd.promise;
             },
@@ -501,17 +521,18 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
                   return function(resp) {
                     var authData;
                     authData = _this.getConfig(opts.config).handleTokenValidationResponse(resp);
-                    _this.handleValidAuth(authData);
-                    if (_this.firstTimeLogin) {
-                      $rootScope.$broadcast('auth:email-confirmation-success', _this.user);
-                    }
-                    if (_this.oauthRegistration) {
-                      $rootScope.$broadcast('auth:oauth-registration', _this.user);
-                    }
-                    if (_this.mustResetPassword) {
-                      $rootScope.$broadcast('auth:password-reset-confirm-success', _this.user);
-                    }
-                    return $rootScope.$broadcast('auth:validation-success', _this.user);
+                    return _this.handleValidAuth(authData).then(function() {
+                      if (this.firstTimeLogin) {
+                        $rootScope.$broadcast('auth:email-confirmation-success', this.user);
+                      }
+                      if (this.oauthRegistration) {
+                        $rootScope.$broadcast('auth:oauth-registration', this.user);
+                      }
+                      if (this.mustResetPassword) {
+                        $rootScope.$broadcast('auth:password-reset-confirm-success', this.user);
+                      }
+                      return $rootScope.$broadcast('auth:validation-success', this.user);
+                    });
                   };
                 })(this)).error((function(_this) {
                   return function(data) {
@@ -545,35 +566,45 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               return this.getConfig().parseExpiry(this.retrieveData('auth_headers') || {});
             },
             invalidateTokens: function() {
-              var key, val, _ref;
+              var deferred, key, self, val, _ref;
+              deferred = $q.defer();
               _ref = this.user;
               for (key in _ref) {
                 val = _ref[key];
                 delete this.user[key];
               }
-              this.deleteData('currentConfigName');
-              if (this.timer != null) {
-                $interval.cancel(this.timer);
-              }
-              return this.deleteData('auth_headers');
+              self = this;
+              this.deleteData('currentConfigName').then(function() {
+                if (self.timer != null) {
+                  $interval.cancel(self.timer);
+                }
+                return self.deleteData('auth_headers').then(function() {
+                  return deferred.resolve();
+                });
+              });
+              return deferred.promise;
             },
             signOut: function() {
               return $http["delete"](this.apiUrl() + this.getConfig().signOutUrl).success((function(_this) {
                 return function(resp) {
-                  _this.invalidateTokens();
-                  return $rootScope.$broadcast('auth:logout-success');
+                  return _this.invalidateTokens().then(function() {
+                    return $rootScope.$broadcast('auth:logout-success');
+                  });
                 };
               })(this)).error((function(_this) {
                 return function(resp) {
-                  _this.invalidateTokens();
-                  return $rootScope.$broadcast('auth:logout-error', resp);
+                  return _this.invalidateTokens().then(function() {
+                    return $rootScope.$broadcast('auth:logout-error', resp);
+                  });
                 };
               })(this));
             },
             handleValidAuth: function(user, setHeader) {
+              var deferred;
               if (setHeader == null) {
                 setHeader = false;
               }
+              deferred = $q.defer();
               if (this.requestCredentialsPollingTimer != null) {
                 $timeout.cancel(this.requestCredentialsPollingTimer);
               }
@@ -587,9 +618,15 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
                   clientId: this.user.client_id,
                   uid: this.user.uid,
                   expiry: this.user.expiry
-                }));
+                })).then(function() {
+                  deferred.resolve();
+                  return self.resolveDfd();
+                });
+              } else {
+                deferred.resolve();
+                this.resolveDfd();
               }
-              return this.resolveDfd();
+              return deferred.promise;
             },
             buildAuthHeaders: function(ctx) {
               var headers, key, val, _ref;
@@ -602,82 +639,107 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
               return headers;
             },
             persistData: function(key, val, configName) {
+              var deferred;
+              deferred = $q.defer();
               if (this.getConfig(configName).storage instanceof Object) {
-                return this.getConfig(configName).storage.persistData(key, val, this.getConfig(configName));
+                this.getConfig(configName).storage.persistData(key, val, this.getConfig(configName)).then(function() {
+                  return deferred.resolve();
+                });
               } else {
                 switch (this.getConfig(configName).storage) {
                   case 'localStorage':
-                    return $window.localStorage.setItem(key, JSON.stringify(val));
+                    $window.localStorage.setItem(key, JSON.stringify(val));
+                    break;
                   case 'sessionStorage':
-                    return $window.sessionStorage.setItem(key, JSON.stringify(val));
+                    $window.sessionStorage.setItem(key, JSON.stringify(val));
+                    break;
                   default:
-                    return ipCookie(key, val, this.getConfig().cookieOps);
+                    ipCookie(key, val, this.getConfig().cookieOps);
                 }
+                deferred.resolve();
               }
+              return deferred.promise;
             },
             retrieveData: function(key) {
-              var e;
+              var deferred, e;
+              deferred = $q.defer();
               try {
                 if (this.getConfig().storage instanceof Object) {
-                  return this.getConfig().storage.retrieveData(key);
+                  this.getConfig().storage.retrieveData(key).then(function(data) {
+                    return deferred.resolve(data);
+                  });
                 } else {
                   switch (this.getConfig().storage) {
                     case 'localStorage':
-                      return JSON.parse($window.localStorage.getItem(key));
+                      deferred.resolve(JSON.parse($window.localStorage.getItem(key)));
+                      break;
                     case 'sessionStorage':
-                      return JSON.parse($window.sessionStorage.getItem(key));
+                      deferred.resolve(JSON.parse($window.sessionStorage.getItem(key)));
+                      break;
                     default:
-                      return ipCookie(key);
+                      deferred.resolve(ipCookie(key));
                   }
                 }
               } catch (_error) {
                 e = _error;
                 if (e instanceof SyntaxError) {
-                  return void 0;
+                  deferred.resolve(void 0);
                 } else {
                   throw e;
                 }
               }
+              return deferred.promise;
             },
             deleteData: function(key) {
-              var cookieOps;
+              var deferred;
+              deferred = $q.defer();
               if (this.getConfig().storage instanceof Object) {
-                this.getConfig().storage.deleteData(key);
+                this.getConfig().storage.deleteData(key).then(function() {
+                  return deferred.resolve();
+                });
               }
               switch (this.getConfig().storage) {
                 case 'localStorage':
-                  return $window.localStorage.removeItem(key);
+                  $window.localStorage.removeItem(key);
+                  break;
                 case 'sessionStorage':
-                  return $window.sessionStorage.removeItem(key);
+                  $window.sessionStorage.removeItem(key);
+                  break;
                 default:
-                  cookieOps = {
+                  ipCookie.remove(key, {
                     path: this.getConfig().cookieOps.path
-                  };
-                  if (this.getConfig().cookieOps.domain !== void 0) {
-                    cookieOps.domain = this.getConfig().cookieOps.domain;
-                  }
-                  return ipCookie.remove(key, cookieOps);
+                  });
               }
+              deferred.resolve();
+              return deferred.promise;
             },
             setAuthHeaders: function(h) {
-              var expiry, newHeaders, now, result;
-              newHeaders = angular.extend(this.retrieveData('auth_headers') || {}, h);
-              result = this.persistData('auth_headers', newHeaders);
-              expiry = this.getExpiry();
-              now = new Date().getTime();
-              if (expiry > now) {
-                if (this.timer != null) {
-                  $interval.cancel(this.timer);
-                }
-                this.timer = $interval(((function(_this) {
-                  return function() {
-                    return _this.validateUser({
-                      config: _this.getSavedConfig()
-                    });
-                  };
-                })(this)), parseInt(expiry - now), 1);
-              }
-              return result;
+              var deferred, self;
+              deferred = $q.defer();
+              self = this;
+              this.retrieveData('auth_headers').then(function(existingHeaders) {
+                var newHeaders;
+                newHeaders = angular.extend(existingHeaders || {}, h);
+                return self.persistData('auth_headers', newHeaders).then(function(result) {
+                  var expiry, now;
+                  expiry = self.getExpiry();
+                  now = new Date().getTime();
+                  if (expiry > now) {
+                    if (self.timer != null) {
+                      $interval.cancel(self.timer);
+                    }
+                    self.timer = $interval(((function(_this) {
+                      return function() {
+                        return self.validateUser({
+                          config: self.getSavedConfig()
+                        });
+                      };
+                    })(this)), parseInt(expiry - now), 1);
+                  }
+                  return deferred.resolve(result);
+                });
+              });
+              return deferred.promise;
             },
             initDfd: function() {
               return this.dfd = $q.defer();
@@ -791,21 +853,26 @@ angular.module('ng-token-auth', ['ipCookie']).provider('$auth', function() {
       '$injector', function($injector) {
         return {
           request: function(req) {
+            var result;
+            result = req;
             $injector.invoke([
-              '$http', '$auth', function($http, $auth) {
-                var key, val, _ref, _results;
+              '$http', '$auth', '$q', function($http, $auth, $q) {
+                var deferred;
                 if (req.url.match($auth.apiUrl())) {
-                  _ref = $auth.retrieveData('auth_headers');
-                  _results = [];
-                  for (key in _ref) {
-                    val = _ref[key];
-                    _results.push(req.headers[key] = val);
-                  }
-                  return _results;
+                  deferred = $q.defer();
+                  $auth.retrieveData('auth_headers').then(function(auth_headers) {
+                    var key, val;
+                    for (key in auth_headers) {
+                      val = auth_headers[key];
+                      req.headers[key] = val;
+                    }
+                    return deferred.resolve(req);
+                  });
+                  return result = deferred.promise;
                 }
               }
             ]);
-            return req;
+            return result;
           },
           response: function(resp) {
             $injector.invoke([

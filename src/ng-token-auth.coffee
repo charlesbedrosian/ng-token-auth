@@ -158,7 +158,7 @@ angular.module('ng-token-auth', ['ipCookie'])
               # check if a new user was registered
               oauthRegistration = ev.data.oauth_registration
               delete ev.data.oauth_registration
-              @handleValidAuth(ev.data, true).then() ->
+              @handleValidAuth(ev.data, true).then () ->
                 $rootScope.$broadcast('auth:login-success', ev.data)
               if oauthRegistration
                 $rootScope.$broadcast('auth:oauth-registration', ev.data)
@@ -218,8 +218,9 @@ angular.module('ng-token-auth', ['ipCookie'])
               .success((resp) =>
                 @setConfigName(opts.config)
                 authData = @getConfig(opts.config).handleLoginResponse(resp, @)
+                self = this
                 @handleValidAuth(authData).then () ->
-                  $rootScope.$broadcast('auth:login-success', @user)
+                  $rootScope.$broadcast('auth:login-success', self.user)
               )
               .error((resp) =>
                 @rejectDfd({
@@ -233,8 +234,12 @@ angular.module('ng-token-auth', ['ipCookie'])
 
           # check if user is authenticated
           userIsAuthenticated: ->
-            @retrieveData('auth_headers') and @user.signedIn and not @tokenHasExpired()
-
+            deferred = $q.defer()
+            self = this
+            @retrieveData('auth_headers').then (headers) ->
+              isAuthenticated = (headers and self.user.signedIn and not self.tokenHasExpired())
+              deferred.resolve(isAuthenticated)
+            return deferred.promise
 
           # request password reset from API
           requestPasswordReset: (params, opts={}) ->
@@ -464,96 +469,102 @@ angular.module('ng-token-auth', ['ipCookie'])
 
               # save trip to API if possible. assume that user is still signed
               # in if auth headers are present and token has not expired.
-              if @userIsAuthenticated()
+              self = this
+              @userIsAuthenticated().then (authenticated) ->
+                if authenticated
                   # user is still presumably logged in
                   @resolveDfd()
 
-              else
-                # token querystring is present. user most likely just came from
-                # registration email link.
-                search = $location.search()
+                else
+                  # token querystring is present. user most likely just came from
+                  # registration email link.
+                  search = $location.search()
 
-                # determine querystring params accounting for possible angular parsing issues
-                location_parse = @parseLocation(window.location.search)
-                params = if Object.keys(search).length==0 then location_parse else search
+                  # determine querystring params accounting for possible angular parsing issues
+                  location_parse = self.parseLocation(window.location.search)
+                  params = if Object.keys(search).length==0 then location_parse else search
 
-                # auth_token matches what is sent with postMessage, but supporting token for
-                # backwards compatability
-                token = params.auth_token || params.token
+                  # auth_token matches what is sent with postMessage, but supporting token for
+                  # backwards compatability
+                  token = params.auth_token || params.token
 
-                if token != undefined
-                  clientId   = params.client_id
-                  uid        = params.uid
-                  expiry     = params.expiry
-                  configName = params.config
+                  if token != undefined
+                    clientId   = params.client_id
+                    uid        = params.uid
+                    expiry     = params.expiry
+                    configName = params.config
 
-                  # use the configuration that was used in creating
-                  # the confirmation link
-                  @setConfigName(configName)
+                    # use the configuration that was used in creating
+                    # the confirmation link
+                    self.setConfigName(configName)
 
-                  # check if redirected from password reset link
-                  @mustResetPassword = params.reset_password
+                    # check if redirected from password reset link
+                    self.mustResetPassword = params.reset_password
 
-                  # check if redirected from email confirmation link
-                  @firstTimeLogin = params.account_confirmation_success
+                    # check if redirected from email confirmation link
+                    self.firstTimeLogin = params.account_confirmation_success
 
-                  # check if redirected from auth registration
-                  @oauthRegistration = params.oauth_registration
+                    # check if redirected from auth registration
+                    self.oauthRegistration = params.oauth_registration
 
-                  # persist these values
-                  @setAuthHeaders(@buildAuthHeaders({
-                    token:    token
-                    clientId: clientId
-                    uid:      uid
-                    expiry:   expiry
-                  }))
+                    # persist these values
+                    self.setAuthHeaders(self.buildAuthHeaders({
+                      token:    token
+                      clientId: clientId
+                      uid:      uid
+                      expiry:   expiry
+                    }))
 
-                  # build url base
-                  url = ($location.path() || '/')
+                    # build url base
+                    url = ($location.path() || '/')
 
-                  # strip token-related qs from url to prevent re-use of these params
-                  # on page refresh
-                  ['auth_token', 'token', 'client_id', 'uid', 'expiry', 'config', 'reset_password', 'account_confirmation_success', 'oauth_registration'].forEach (prop) ->
-                    delete params[prop];
+                    # strip token-related qs from url to prevent re-use of these params
+                    # on page refresh
+                    ['auth_token', 'token', 'client_id', 'uid', 'expiry', 'config', 'reset_password', 'account_confirmation_success', 'oauth_registration'].forEach (prop) ->
+                      delete params[prop];
 
-                  # append any remaining params, if any
-                  if Object.keys(params).length > 0
-                    url += '?' + @buildQueryString(params);
+                    # append any remaining params, if any
+                    if Object.keys(params).length > 0
+                      url += '?' + self.buildQueryString(params);
 
-                  # redirect to target url
-                  $location.url(url)
+                    # redirect to target url
+                    $location.url(url)
 
-                # token cookie is present. user is returning to the site, or
-                # has refreshed the page.
-                else if @retrieveData('currentConfigName')
-                  configName = @retrieveData('currentConfigName')
+                  # token cookie is present. user is returning to the site, or
+                  # has refreshed the page.
+                  else
+                    self.retrieveData('currentConfigName').then (currentConfigName) ->
+                      if currentConfigName
+                        configName = currentConfigName
 
-                # cookie might not be set, but forcing token validation has
-                # been enabled
-                if @getConfig().forceValidateToken
-                  @validateToken({config: configName})
-
-                else if !isEmpty(@retrieveData('auth_headers'))
-                  # if token has expired, do not verify token with API
-                  if @tokenHasExpired()
-                    $rootScope.$broadcast('auth:session-expired')
-                    @rejectDfd({
-                      reason: 'unauthorized'
-                      errors: ['Session expired.']
-                    })
+                  # cookie might not be set, but forcing token validation has
+                  # been enabled
+                  if self.getConfig().forceValidateToken
+                    self.validateToken({config: configName})
 
                   else
-                    # token has been saved in session var, token has not
-                    # expired. must be verified with API.
-                    @validateToken({config: configName})
+                    self.retrieveData('auth_headers').then (authHeaders) ->
+                      if !isEmpty(authHeaders)
+                        # if token has expired, do not verify token with API
+                        if self.tokenHasExpired()
+                          $rootScope.$broadcast('auth:session-expired')
+                          self.rejectDfd({
+                            reason: 'unauthorized'
+                            errors: ['Session expired.']
+                          })
 
-                # new user session. will redirect to login
-                else
-                  @rejectDfd({
-                    reason: 'unauthorized'
-                    errors: ['No credentials']
-                  })
-                  $rootScope.$broadcast('auth:invalid')
+                        else
+                          # token has been saved in session var, token has not
+                          # expired. must be verified with API.
+                          self.validateToken({config: configName})
+
+                      # new user session. will redirect to login
+                      else
+                        self.rejectDfd({
+                          reason: 'unauthorized'
+                          errors: ['No credentials']
+                        })
+                        $rootScope.$broadcast('auth:invalid')
 
 
             @dfd.promise
@@ -627,17 +638,18 @@ angular.module('ng-token-auth', ['ipCookie'])
             delete @user[key] for key, val of @user
 
             # remove any assumptions about current configuration
+            self = this
             @deleteData('currentConfigName').then () ->
 
-              $interval.cancel @timer if @timer?
+              $interval.cancel self.timer if self.timer?
 
               # kill cookies, otherwise session will resume on page reload
               # setting this value to null will force the validateToken method
               # to re-validate credentials with api server when validate is called
-              @deleteData('auth_headers').then() ->
+              self.deleteData('auth_headers').then () ->
                 deferred.resolve()
 
-            return deferred
+            return deferred.promise
 
           # destroy auth token on server, destroy user auth credentials
           signOut: ->
@@ -654,7 +666,7 @@ angular.module('ng-token-auth', ['ipCookie'])
 
           # handle successful authentication
           handleValidAuth: (user, setHeader=false) ->
-            deferred = $.defer()
+            deferred = $q.defer()
             # cancel any pending postMessage checks
             $timeout.cancel(@requestCredentialsPollingTimer) if @requestCredentialsPollingTimer?
 
@@ -678,13 +690,13 @@ angular.module('ng-token-auth', ['ipCookie'])
               })).then () ->
                 deferred.resolve()
                 # fulfill promise
-                @resolveDfd()
+                self.resolveDfd()
             else
               deferred.resolve()
               # fulfill promise
               @resolveDfd()
 
-            return deferred
+            return deferred.promise
 
           # configure auth token format.
           buildAuthHeaders: (ctx) ->
@@ -702,7 +714,7 @@ angular.module('ng-token-auth', ['ipCookie'])
 
             if @getConfig(configName).storage instanceof Object
               @getConfig(configName).storage.persistData(key, val, @getConfig(configName)).then () ->
-                deferred.fulfill()
+                deferred.resolve()
             else
               switch @getConfig(configName).storage
                 when 'localStorage'
@@ -711,9 +723,9 @@ angular.module('ng-token-auth', ['ipCookie'])
                   $window.sessionStorage.setItem(key, JSON.stringify(val))
                 else
                   ipCookie(key, val, @getConfig().cookieOps)
-              deferred.fulfill()
+              deferred.resolve()
 
-            return deferred
+            return deferred.promise
 
           # abstract persistent data retrieval
           retrieveData: (key) ->
@@ -721,28 +733,28 @@ angular.module('ng-token-auth', ['ipCookie'])
             try
               if @getConfig().storage instanceof Object
                 @getConfig().storage.retrieveData(key).then (data) ->
-                  deferred.fulfill(data)
+                  deferred.resolve(data)
               else
                 switch @getConfig().storage
                   when 'localStorage'
-                    deferred.fulfill(JSON.parse($window.localStorage.getItem(key)))
+                    deferred.resolve(JSON.parse($window.localStorage.getItem(key)))
                   when 'sessionStorage'
-                    deferred.fulfill(JSON.parse($window.sessionStorage.getItem(key)))
-                  else deferred.fulfill(ipCookie(key))
+                    deferred.resolve(JSON.parse($window.sessionStorage.getItem(key)))
+                  else deferred.resolve(ipCookie(key))
             catch e
               # gracefully handle if JSON parsing
               if e instanceof SyntaxError
-                undefined
+                deferred.resolve(undefined)
               else
                 throw e
-            return deferred
+            return deferred.promise
 
           # abstract persistent data removal
           deleteData: (key) ->
             deferred = $q.defer()
             if @getConfig().storage instanceof Object
               @getConfig().storage.deleteData(key).then () ->
-                deferred.fulfill()
+                deferred.resolve()
             switch @getConfig().storage
               when 'localStorage'
                 $window.localStorage.removeItem(key)
@@ -750,31 +762,32 @@ angular.module('ng-token-auth', ['ipCookie'])
                 $window.sessionStorage.removeItem(key)
               else
                 ipCookie.remove(key, {path: @getConfig().cookieOps.path})
-            deferred.fulfill()
-            return deferred
+            deferred.resolve()
+            return deferred.promise
 
 
           # persist authentication token, client id, uid
           setAuthHeaders: (h) ->
             deferred = $q.defer()
+            self = this
             @retrieveData('auth_headers').then (existingHeaders) ->
 
               newHeaders = angular.extend((existingHeaders || {}), h)
-              @persistData('auth_headers', newHeaders).then (result) ->
+              self.persistData('auth_headers', newHeaders).then (result) ->
 
-                expiry = @getExpiry()
+                expiry = self.getExpiry()
                 now    = new Date().getTime()
 
                 if expiry > now
-                  $interval.cancel @timer if @timer?
+                  $interval.cancel self.timer if self.timer?
 
-                  @timer = $interval (=>
-                    @validateUser {config: @getSavedConfig()}
+                  self.timer = $interval (=>
+                    self.validateUser {config: self.getSavedConfig()}
                   ), (parseInt (expiry - now)), 1
 
-                deferred.fulfill(result)
+                deferred.resolve(result)
 
-            return deferred
+            return deferred.promise
 
 
           initDfd: ->
@@ -908,13 +921,18 @@ angular.module('ng-token-auth', ['ipCookie'])
     # http://stackoverflow.com/questions/14681654/i-need-two-instances-of-angularjs-http-service-or-what
     $httpProvider.interceptors.push ['$injector', ($injector) ->
       request: (req) ->
-        $injector.invoke ['$http', '$auth',  ($http, $auth) ->
+        result = req
+        $injector.invoke ['$http', '$auth', '$q',  ($http, $auth, $q) ->
           if req.url.match($auth.apiUrl())
-            for key, val of $auth.retrieveData('auth_headers')
-              req.headers[key] = val
-        ]
+            deferred = $q.defer()
+            $auth.retrieveData('auth_headers').then (auth_headers) ->
 
-        return req
+              for key, val of auth_headers
+                req.headers[key] = val
+              deferred.resolve(req)
+            result = deferred.promise
+        ]
+        return result
 
       response: (resp) ->
         $injector.invoke ['$http', '$auth', ($http, $auth) ->
